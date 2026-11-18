@@ -1,0 +1,35 @@
+name: Download data Weathercloud
+
+on:
+  schedule:
+    - cron: "20 17 * * *"   # setiap hari 00:20 WIB (17:20 UTC)
+  workflow_dispatch:          # tombol "Run workflow" untuk menjalankan manual
+    inputs:
+      backfill:
+        description: "Ambil berapa bulan ke belakang (0 = bulan ini saja)"
+        default: "0"
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Download & rapikan
+        env:
+          WC_USER: ${{ secrets.WC_USER }}
+          WC_PASS: ${{ secrets.WC_PASS }}
+        run: python weathercloud_sync.py --backfill "${{ github.event.inputs.backfill || '0' }}"
+      - name: Simpan ke repository
+        run: |
+          git config user.name "weathercloud-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data
+          git diff --cached --quiet || git commit -m "Data Weathercloud $(TZ=Asia/Jakarta date +'%Y-%m-%d %H:%M') WIB"
+          git push
