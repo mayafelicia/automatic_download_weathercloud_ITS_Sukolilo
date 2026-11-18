@@ -95,7 +95,16 @@ def download_raw(s, token, device, start: datetime, end: datetime) -> bytes:
 def clean(raw: bytes) -> pd.DataFrame:
     """CSV Weathercloud (UTF-16, ';', angka '1,011.8') -> DataFrame rapi."""
     text = raw.decode("utf-16-le" if raw[1:2] == b"\x00" else "utf-8", errors="replace").lstrip("﻿")
-    df = pd.read_csv(io.StringIO(text), sep=";", index_col=False, thousands=",", decimal=".")
+    # Weathercloud kadang menulis ';' ekstra di baris yang kosong -> potong kalau sisanya kosong
+    lines = [l for l in text.splitlines() if l.strip()]
+    n = lines[0].count(";")
+    for i, l in enumerate(lines[1:], 1):
+        extra = l.split(";")[n + 1:]
+        if extra:
+            if any(x.strip() for x in extra):
+                raise ValueError(f"Baris {i + 1} punya kolom berisi di luar judul: {l[:80]}")
+            lines[i] = ";".join(l.split(";")[: n + 1])
+    df = pd.read_csv(io.StringIO("\n".join(lines)), sep=";", index_col=False, thousands=",", decimal=".")
     df = df.loc[:, ~df.columns.str.startswith("Unnamed")]
     date_col = df.columns[0]
     df[date_col] = pd.to_datetime(df[date_col], format="%d/%m/%Y %H:%M:%S", errors="coerce")
