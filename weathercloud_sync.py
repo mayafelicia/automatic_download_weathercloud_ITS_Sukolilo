@@ -37,6 +37,10 @@ STATIONS = {
 
 
 # ---------------------------------------------------------------- download
+class NoData(Exception):
+    """Weathercloud menjawab tidak ada data / di luar batas 12 bulan."""
+
+
 def login(user: str, password: str) -> requests.Session:
     s = requests.Session()
     s.headers["User-Agent"] = "Mozilla/5.0 (ITS weathercloud sync)"
@@ -73,10 +77,15 @@ def download_raw(s, token, device, start: datetime, end: datetime) -> bytes:
         headers={"X-Requested-With": "XMLHttpRequest"},
         timeout=120,
     )
+    if r.status_code == 400:  # pesan dari Weathercloud, mis. "No data available."
+        raise NoData(r.text.strip())
     r.raise_for_status()
-    info = r.json()
-    if info.get("status") != "success":
-        raise RuntimeError(f"Export ditolak: {info}")
+    try:
+        info = r.json()
+    except ValueError:
+        info = None
+    if not info or info.get("status") != "success":
+        raise RuntimeError(f"Export gagal (sesi login habis?): {r.text[:200]!r}")
     f = s.get(f"{BASE}/data/download/file/{info['filename']}", timeout=120)
     f.raise_for_status()
     return f.content
@@ -149,23 +158,40 @@ def main():
         sys.exit("Isi environment variable WC_USER dan WC_PASS dulu.")
     s = login(user, pw)
     token = csrf_token(s)
+    failed = []
 
     for name, device in STATIONS.items():
         folder = OUT / name
         for start, end in months_to_fetch(args.backfill):
             month = start.strftime("%Y-%m")
-            try:
-                df = clean(download_raw(s, token, device, start, end))
-            except Exception as e:
-                print(f"[GAGAL] {name} {month}: {e}")
+            for attempt in range(1, 4):
+                time.sleep(3)  # jangan membebani server
+                try:
+                    df = clean(download_raw(s, token, device, start, end))
+                    break
+                except NoData as e:
+                    df = None
+                    print(f"[LEWAT] {name} {month}: {e}")
+                    break
+                except Exception as e:
+                    print(f"[ULANG {attempt}/3] {name} {month}: {type(e).__name__}: {e}")
+                    time.sleep(10 * attempt)
+                    s = login(user, pw)  # login ulang, sesi bisa terputus
+                    token = csrf_token(s)
+            else:
+                failed.append(f"{name} {month}")
+                continue
+            if df is None:
                 continue
             if df.drop(columns="Waktu (WIB)").notna().any(axis=None):
                 n = merge_save(df, folder, name, month)
                 print(f"[OK] {name} {month}: {n} baris")
             else:
                 print(f"[KOSONG] {name} {month}: tidak ada data")
-            time.sleep(2)  # jangan membebani server
         rebuild_all(folder, name)
+
+    if failed:  # buat workflow merah supaya ketahuan
+        sys.exit("GAGAL setelah 3 kali coba: " + ", ".join(failed))
 
 
 if __name__ == "__main__":
